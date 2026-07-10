@@ -1,4 +1,4 @@
-export const ADMIN_PASSWORD = "yanik123";
+export const ADMIN_PASSWORD = "elda2026";
 
 export const STORAGE_KEYS = {
   products: "elda_products",
