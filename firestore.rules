@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Le site n'utilise pas l'authentification Firebase (l'admin est protégé
+    // par un simple mot de passe côté client). On ouvre donc l'accès complet
+    // pour reproduire le comportement actuel avec localStorage.
+    // À restreindre si une vraie authentification admin est ajoutée plus tard.
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #fbf8f3;
+  color: #1a1420;
+}
+
+::selection {
+  background-color: #c9a24b;
+  color: #fbf8f3;
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-full bg-elda-gradient px-7 py-3 font-body text-sm font-semibold tracking-wide text-elda-cream shadow-elda transition-all duration-300 hover:-translate-y-0.5 hover:shadow-elda-gold active:translate-y-0;
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center gap-2 rounded-full border-2 border-elda-purple bg-transparent px-7 py-3 font-body text-sm font-semibold tracking-wide text-elda-purple transition-all duration-300 hover:-translate-y-0.5 hover:bg-elda-purple hover:text-elda-cream active:translate-y-0;
+}
+
+.btn-gold {
+  @apply inline-flex items-center justify-center gap-2 rounded-full bg-elda-gold px-6 py-2.5 font-body text-sm font-semibold tracking-wide text-elda-black shadow-elda-gold transition-all duration-300 hover:-translate-y-0.5 hover:bg-elda-gold-light active:translate-y-0;
+}
+
+.card-elda {
+  @apply rounded-2xl border border-elda-gold/20 bg-white shadow-elda transition-all duration-300 hover:-translate-y-1 hover:shadow-elda-gold;
+}
+
+.section-title {
+  @apply font-display text-3xl font-bold text-elda-purple-dark sm:text-4xl;
+}
+
+.input-elda {
+  @apply w-full rounded-lg border border-elda-purple/20 bg-elda-cream px-4 py-2.5 font-body text-sm text-elda-black placeholder:text-elda-black/40 focus:border-elda-gold focus:outline-none focus:ring-2 focus:ring-elda-gold/30;
+}
+
+.badge {
+  @apply inline-block rounded-full px-3 py-1 text-xs font-semibold tracking-wide;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer-gold {
+  background: linear-gradient(90deg, #c9a24b 0%, #e4c878 50%, #c9a24b 100%);
+  background-size: 200% auto;
+  animation: shimmer 3s linear infinite;
+}
