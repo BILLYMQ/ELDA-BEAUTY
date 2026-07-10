@@ -62,9 +62,9 @@ export default function Footer() {
             Contact
           </h3>
           <ul className="space-y-2.5 font-body text-sm text-elda-cream/70">
-            <li>Abidjan, Côte d&apos;Ivoire</li>
-            <li>+225 07 00 00 00 00</li>
-            <li>contact@eldabeauty.com</li>
+            <li>Rouyn-Noranda, Québec, Canada</li>
+            <li>+1 873 991 1397</li>
+            <li>Kankoines2@gmail.com</li>
             <li>Lun - Sam : 9h - 19h</li>
           </ul>
         </div>
