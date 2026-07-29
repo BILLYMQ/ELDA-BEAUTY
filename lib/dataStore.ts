@@ -1,18 +1,4 @@
-import {
-  collection,
-  deleteDoc,
-  deleteField,
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  orderBy,
-  query,
-  setDoc,
-  updateDoc,
-  arrayUnion,
-} from "firebase/firestore";
-import { db, isFirebaseConfigured } from "./firebaseClient";
+import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import { EVENT_PREFIX, STORAGE_KEYS } from "./constants";
 import { defaultHomeContent } from "@/data/defaultHomeContent";
 import { defaultVideos } from "@/data/defaultVideos";
@@ -30,7 +16,7 @@ import type {
   Video,
 } from "@/types";
 
-export { isFirebaseConfigured };
+export { isSupabaseConfigured };
 
 type Unsubscribe = () => void;
 
@@ -39,9 +25,12 @@ function isBrowser() {
 }
 
 /**
- * Firestore rejects `undefined` field values outright (unlike JSON.stringify,
- * which silently drops them). Our types use optional fields (price?, quantity?...)
- * that are commonly left unset, so every write to Firestore must be sanitized first.
+ * The Supabase JS client JSON-serializes payloads before sending them, which
+ * silently drops `undefined`-valued keys (unlike leaving them in and hoping
+ * Postgres ignores them). Our types use optional fields (price?, quantity?...)
+ * that are commonly left unset, and an explicit `undefined` means "clear this
+ * field" (e.g. admin empties the price input) — stripping it here makes that
+ * intent explicit instead of relying on implicit serializer behavior.
  */
 function stripUndefined<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -56,19 +45,6 @@ function stripUndefined<T>(value: T): T {
     return result as T;
   }
   return value;
-}
-
-/**
- * For updateDoc() patches specifically: an explicit `undefined` means "clear this
- * field" (e.g. admin empties the price input), so it must become deleteField()
- * rather than being silently omitted (which would leave the old value untouched).
- */
-function sanitizeForUpdate(patch: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, v] of Object.entries(patch)) {
-    result[key] = v === undefined ? deleteField() : stripUndefined(v);
-  }
-  return result;
 }
 
 function readLocal<T>(key: string, fallback: T): T {
@@ -99,43 +75,76 @@ function onLocalChange(key: string, cb: () => void): Unsubscribe {
 }
 
 /**
- * Factory for a simple collection (id + createdAt) backed either by Firestore
- * (when Firebase env vars are configured) or localStorage (offline fallback).
- * Same interface either way so components never need to know which backend is live.
+ * Factory for a simple collection (id + createdAt) backed either by Supabase
+ * (when env vars are configured) or localStorage (offline fallback). Same
+ * interface either way so components never need to know which backend is live.
+ *
+ * Each row is `{ id, created_at, data }` where `data` is the full JS object —
+ * this mirrors the previous Firestore document model and keeps optional/nested
+ * fields (arrays, sub-objects) working without a bespoke column per field.
  */
 function createCollectionStore<T extends { id: string; createdAt: number }>(
   storageKey: string,
-  collectionName: string
+  tableName: string
 ) {
   function localReadAll(): T[] {
     return [...readLocal<T[]>(storageKey, [])].sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  async function fetchAll(): Promise<T[]> {
+    const { data, error } = await supabase!
+      .from(tableName)
+      .select("data")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return (data ?? []).map((row) => row.data as T);
+  }
+
   function subscribe(cb: (items: T[]) => void): Unsubscribe {
-    if (isFirebaseConfigured && db) {
-      const q = query(collection(db, collectionName), orderBy("createdAt", "desc"));
-      return onSnapshot(q, (snap) => {
-        cb(snap.docs.map((d) => d.data() as T));
-      });
+    if (isSupabaseConfigured && supabase) {
+      let cancelled = false;
+      const refresh = () => {
+        fetchAll().then((items) => {
+          if (!cancelled) cb(items);
+        });
+      };
+      refresh();
+      const client = supabase;
+      const channel = client
+        .channel(`${tableName}-changes`)
+        .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refresh)
+        .subscribe();
+      return () => {
+        cancelled = true;
+        client.removeChannel(channel);
+      };
     }
     cb(localReadAll());
     return onLocalChange(storageKey, () => cb(localReadAll()));
   }
 
   async function add(item: T): Promise<void> {
-    if (isFirebaseConfigured && db) {
-      await setDoc(doc(db, collectionName, item.id), stripUndefined(item));
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase
+        .from(tableName)
+        .upsert({ id: item.id, created_at: item.createdAt, data: stripUndefined(item) });
+      if (error) throw error;
       return;
     }
     writeLocal(storageKey, [item, ...readLocal<T[]>(storageKey, [])]);
   }
 
   async function update(id: string, patch: Partial<T>): Promise<void> {
-    if (isFirebaseConfigured && db) {
-      await updateDoc(
-        doc(db, collectionName, id),
-        sanitizeForUpdate(patch as Record<string, unknown>)
-      );
+    if (isSupabaseConfigured && supabase) {
+      const { data: existing, error: fetchError } = await supabase
+        .from(tableName)
+        .select("data")
+        .eq("id", id)
+        .single();
+      if (fetchError) throw fetchError;
+      const merged = stripUndefined({ ...(existing.data as object), ...patch });
+      const { error } = await supabase.from(tableName).update({ data: merged }).eq("id", id);
+      if (error) throw error;
       return;
     }
     writeLocal(
@@ -145,8 +154,9 @@ function createCollectionStore<T extends { id: string; createdAt: number }>(
   }
 
   async function remove(id: string): Promise<void> {
-    if (isFirebaseConfigured && db) {
-      await deleteDoc(doc(db, collectionName, id));
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase.from(tableName).delete().eq("id", id);
+      if (error) throw error;
       return;
     }
     writeLocal(
@@ -190,12 +200,17 @@ export function updateReservationStatus(id: string, status: ReservationStatus) {
 const videosStore = createCollectionStore<Video>(STORAGE_KEYS.videos, "videos");
 
 async function seedVideosIfEmpty() {
-  if (isFirebaseConfigured && db) {
-    const snap = await getDocs(collection(db, "videos"));
-    if (snap.empty) {
-      await Promise.all(
-        defaultVideos.map((v) => setDoc(doc(db!, "videos", v.id), stripUndefined(v)))
-      );
+  if (isSupabaseConfigured && supabase) {
+    const { count, error } = await supabase
+      .from("videos")
+      .select("id", { count: "exact", head: true });
+    if (!error && !count) {
+      const rows = defaultVideos.map((v) => ({
+        id: v.id,
+        created_at: v.createdAt,
+        data: stripUndefined(v),
+      }));
+      await supabase.from("videos").upsert(rows);
     }
     return;
   }
@@ -224,11 +239,33 @@ function localWriteConversations(list: Conversation[]) {
   writeLocal(STORAGE_KEYS.conversations, list);
 }
 
+async function fetchConversations(): Promise<Conversation[]> {
+  const { data, error } = await supabase!
+    .from("conversations")
+    .select("data")
+    .order("last_updated", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((row) => row.data as Conversation);
+}
+
 export function subscribeConversations(cb: (list: Conversation[]) => void): Unsubscribe {
-  if (isFirebaseConfigured && db) {
-    return onSnapshot(collection(db, "conversations"), (snap) => {
-      cb(snap.docs.map((d) => d.data() as Conversation));
-    });
+  if (isSupabaseConfigured && supabase) {
+    let cancelled = false;
+    const refresh = () => {
+      fetchConversations().then((items) => {
+        if (!cancelled) cb(items);
+      });
+    };
+    refresh();
+    const client = supabase;
+    const channel = client
+      .channel("conversations-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, refresh)
+      .subscribe();
+    return () => {
+      cancelled = true;
+      client.removeChannel(channel);
+    };
   }
   cb(localReadConversations());
   return onLocalChange(STORAGE_KEYS.conversations, () => cb(localReadConversations()));
@@ -239,25 +276,36 @@ export async function appendMessage(
   base: { clientId: string; clientName: string; topic: ConversationTopic },
   message: Message
 ): Promise<void> {
-  if (isFirebaseConfigured && db) {
-    // A single merged setDoc + arrayUnion is atomic server-side, whether the
-    // document already exists or not — avoids a getDoc-then-branch race where
-    // two near-simultaneous appends (e.g. the client message and the 1.2s-later
-    // auto-reply) could both see "not found" and overwrite each other.
-    const ref = doc(db, "conversations", conversationId);
-    await setDoc(
-      ref,
-      {
-        id: conversationId,
-        clientId: base.clientId,
-        clientName: base.clientName,
-        topic: base.topic,
-        status: "ouverte",
-        lastUpdated: Date.now(),
-        messages: arrayUnion(stripUndefined(message)),
-      },
-      { merge: true }
-    );
+  if (isSupabaseConfigured && supabase) {
+    const { data: existing, error: fetchError } = await supabase
+      .from("conversations")
+      .select("data")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (fetchError) throw fetchError;
+    const now = Date.now();
+    const existingConv = existing?.data as Conversation | undefined;
+    const next: Conversation = existingConv
+      ? {
+          ...existingConv,
+          clientName: base.clientName,
+          messages: [...existingConv.messages, message],
+          status: "ouverte",
+          lastUpdated: now,
+        }
+      : {
+          id: conversationId,
+          clientId: base.clientId,
+          clientName: base.clientName,
+          topic: base.topic,
+          messages: [message],
+          status: "ouverte",
+          lastUpdated: now,
+        };
+    const { error } = await supabase
+      .from("conversations")
+      .upsert({ id: conversationId, last_updated: now, data: stripUndefined(next) });
+    if (error) throw error;
     return;
   }
 
@@ -289,8 +337,16 @@ export async function setConversationStatus(
   id: string,
   status: ConversationStatus
 ): Promise<void> {
-  if (isFirebaseConfigured && db) {
-    await updateDoc(doc(db, "conversations", id), { status });
+  if (isSupabaseConfigured && supabase) {
+    const { data: existing, error: fetchError } = await supabase
+      .from("conversations")
+      .select("data")
+      .eq("id", id)
+      .single();
+    if (fetchError) throw fetchError;
+    const next = { ...(existing.data as Conversation), status };
+    const { error } = await supabase.from("conversations").update({ data: next }).eq("id", id);
+    if (error) throw error;
     return;
   }
   localWriteConversations(
@@ -299,29 +355,50 @@ export async function setConversationStatus(
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  if (isFirebaseConfigured && db) {
-    await deleteDoc(doc(db, "conversations", id));
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase.from("conversations").delete().eq("id", id);
+    if (error) throw error;
     return;
   }
   localWriteConversations(localReadConversations().filter((c) => c.id !== id));
 }
 
 // CONTENU PAGE D'ACCUEIL (document unique)
-const HOME_CONTENT_DOC_ID = "main";
+const HOME_CONTENT_ID = "main";
 
 export function subscribeHomeContent(cb: (content: HomeContent) => void): Unsubscribe {
-  if (isFirebaseConfigured && db) {
-    const ref = doc(db, "homeContent", HOME_CONTENT_DOC_ID);
-    let unsub = () => {};
-    getDoc(ref).then((snap) => {
-      if (!snap.exists()) {
-        setDoc(ref, stripUndefined(defaultHomeContent));
+  if (isSupabaseConfigured && supabase) {
+    let cancelled = false;
+    const refresh = async () => {
+      const { data, error } = await supabase!
+        .from("home_content")
+        .select("data")
+        .eq("id", HOME_CONTENT_ID)
+        .maybeSingle();
+      if (cancelled) return;
+      if (!error && data) {
+        cb(data.data as HomeContent);
+        return;
       }
-      unsub = onSnapshot(ref, (s) => {
-        cb(s.exists() ? (s.data() as HomeContent) : defaultHomeContent);
-      });
-    });
-    return () => unsub();
+      await supabase!
+        .from("home_content")
+        .upsert({ id: HOME_CONTENT_ID, data: stripUndefined(defaultHomeContent) });
+      if (!cancelled) cb(defaultHomeContent);
+    };
+    refresh();
+    const client = supabase;
+    const channel = client
+      .channel("home-content-changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "home_content", filter: `id=eq.${HOME_CONTENT_ID}` },
+        refresh
+      )
+      .subscribe();
+    return () => {
+      cancelled = true;
+      client.removeChannel(channel);
+    };
   }
   cb(readLocal<HomeContent>(STORAGE_KEYS.homeContent, defaultHomeContent));
   return onLocalChange(STORAGE_KEYS.homeContent, () =>
@@ -330,8 +407,11 @@ export function subscribeHomeContent(cb: (content: HomeContent) => void): Unsubs
 }
 
 export async function setHomeContent(content: HomeContent): Promise<void> {
-  if (isFirebaseConfigured && db) {
-    await setDoc(doc(db, "homeContent", HOME_CONTENT_DOC_ID), stripUndefined(content));
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from("home_content")
+      .upsert({ id: HOME_CONTENT_ID, data: stripUndefined(content) });
+    if (error) throw error;
     return;
   }
   writeLocal(STORAGE_KEYS.homeContent, content);
