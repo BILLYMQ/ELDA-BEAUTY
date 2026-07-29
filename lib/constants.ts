@@ -1,5 +1,8 @@
 export const ADMIN_PASSWORD = "elda2026";
 
+export const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL || "https://elda-beauty-production.up.railway.app";
+
 export const STORAGE_KEYS = {
   products: "elda_products",
   cart: "elda_cart",
