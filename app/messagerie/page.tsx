@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useConversations } from "@/lib/hooks";
 import { appendMessage, getClientId } from "@/lib/dataStore";
+import { useToast } from "@/lib/ToastContext";
 import { AUTO_REPLY_TEXT, CONVERSATION_TOPICS } from "@/lib/constants";
 import { generateId, formatDate, fileToDataUrl } from "@/lib/utils";
+import MessagingConnectionNotice from "@/components/MessagingConnectionNotice";
 import type { ConversationTopic, Message } from "@/types";
 
 const QUICK_ACTIONS: { label: string; topic: ConversationTopic; prefill: string }[] = [
@@ -27,6 +29,7 @@ const QUICK_ACTIONS: { label: string; topic: ConversationTopic; prefill: string 
 
 export default function MessageriePage() {
   const { conversations } = useConversations();
+  const { showToast } = useToast();
   const [clientId, setClientId] = useState("");
   const [clientName, setClientName] = useState("Vous");
   const [activeTopic, setActiveTopic] = useState<ConversationTopic>("Général");
@@ -60,12 +63,13 @@ export default function MessageriePage() {
     window.localStorage.setItem("elda_client_name", name);
   };
 
-  const sendMessage = (rawText: string, attachment?: string) => {
+  const sendMessage = async (rawText: string, attachment?: string) => {
     const trimmed = rawText.trim();
     if (!trimmed && !attachment) return;
     if (!clientId) return;
 
     const conversationId = `${clientId}::${activeTopic}`;
+    const base = { clientId, clientName, topic: activeTopic };
     const message: Message = {
       id: generateId(),
       sender: "client",
@@ -73,9 +77,24 @@ export default function MessageriePage() {
       timestamp: Date.now(),
       attachment,
     };
-    appendMessage(conversationId, { clientId, clientName, topic: activeTopic }, message);
-    setText("");
 
+    // On vide le champ de manière optimiste, mais on le restaure si l'envoi échoue
+    // pour que l'utilisateur ne perde pas son message.
+    setText("");
+    try {
+      await appendMessage(conversationId, base, message);
+    } catch (err) {
+      console.error("Échec de l'envoi du message :", err);
+      setText(rawText);
+      showToast(
+        "Le message n'a pas pu être envoyé. Vérifiez la connexion à la base de données.",
+        "error"
+      );
+      return;
+    }
+
+    // Accusé de réception automatique — uniquement après un envoi réussi, afin de
+    // ne pas afficher une fausse réponse « admin » quand le vrai message a échoué.
     setTimeout(() => {
       const autoReply: Message = {
         id: generateId(),
@@ -83,7 +102,9 @@ export default function MessageriePage() {
         text: AUTO_REPLY_TEXT,
         timestamp: Date.now(),
       };
-      appendMessage(conversationId, { clientId, clientName, topic: activeTopic }, autoReply);
+      appendMessage(conversationId, base, autoReply).catch((err) =>
+        console.error("Échec de l'envoi de l'accusé de réception :", err)
+      );
     }, 1200);
   };
 
@@ -115,6 +136,8 @@ export default function MessageriePage() {
           Discutez directement avec l&apos;équipe ELDA BEAUTY.
         </p>
       </div>
+
+      <MessagingConnectionNotice audience="client" />
 
       <div className="grid overflow-hidden rounded-2xl border border-elda-gold/20 bg-white shadow-elda md:grid-cols-[300px_1fr]">
         <aside

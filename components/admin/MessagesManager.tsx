@@ -5,6 +5,7 @@ import { useConversations } from "@/lib/hooks";
 import { appendMessage, deleteConversation, setConversationStatus } from "@/lib/dataStore";
 import { useToast } from "@/lib/ToastContext";
 import { formatDate, generateId } from "@/lib/utils";
+import MessagingConnectionNotice from "@/components/MessagingConnectionNotice";
 import type { Message } from "@/types";
 
 export default function MessagesManager() {
@@ -16,7 +17,7 @@ export default function MessagesManager() {
   const sorted = [...conversations].sort((a, b) => b.lastUpdated - a.lastUpdated);
   const selected = sorted.find((c) => c.id === selectedId) || null;
 
-  const handleReply = (e: React.FormEvent) => {
+  const handleReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selected || !reply.trim()) return;
     const message: Message = {
@@ -25,13 +26,20 @@ export default function MessagesManager() {
       text: reply.trim(),
       timestamp: Date.now(),
     };
-    appendMessage(selected.id, {
-      clientId: selected.clientId,
-      clientName: selected.clientName,
-      topic: selected.topic,
-    }, message);
+    const draft = reply;
     setReply("");
-    showToast("Réponse envoyée.", "success");
+    try {
+      await appendMessage(selected.id, {
+        clientId: selected.clientId,
+        clientName: selected.clientName,
+        topic: selected.topic,
+      }, message);
+      showToast("Réponse envoyée.", "success");
+    } catch (err) {
+      console.error("Échec de l'envoi de la réponse :", err);
+      setReply(draft);
+      showToast("La réponse n'a pas pu être envoyée.", "error");
+    }
   };
 
   const markProcessed = (id: string) => {
@@ -51,6 +59,8 @@ export default function MessagesManager() {
       <h2 className="mb-5 font-display text-lg font-semibold text-elda-purple-dark">
         Messagerie ({conversations.length})
       </h2>
+
+      <MessagingConnectionNotice audience="admin" />
 
       {sorted.length === 0 ? (
         <div className="rounded-2xl border border-elda-gold/30 bg-white px-6 py-12 text-center shadow-elda">
